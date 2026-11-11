@@ -1,0 +1,40 @@
+name: AI eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Скачать код
+        uses: actions/checkout@v7
+
+      - name: Установить Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Тесты проверок
+        run: pytest
+
+      - name: Сравнить версии ассистента (quality gate)
+        run: python -m aieval compare runs/assistant-v1.json runs/assistant-v2.json --report report.md
+
+      - name: Отчёт в сводку запуска
+        if: always()
+        run: cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Сохранить отчёт
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-report
+          path: report.md
