@@ -61,7 +61,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-pytest                                                    # 40 тестов самих проверок
+pytest                                                    # 44 теста самих проверок и сбора
 python -m aieval evaluate runs/assistant-v1.json          # оценить одну версию
 python -m aieval compare runs/assistant-v1.json runs/assistant-v2.json --report report.md
 ```
