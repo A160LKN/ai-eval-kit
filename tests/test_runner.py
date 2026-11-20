@@ -88,6 +88,19 @@ class TestCollect:
         assert len(run["responses"]["consistency-price"]) == 3
         assert run["responses"]["price-known"] == "ответ на: Сколько стоят наушники Sony WH-1000XM5?"
 
+    def test_collect_skips_cases_collected_before(self):
+        asked = []
+        done = {"price-known": "ответ прошлого запуска"}
+        run = collect(CASES, lambda p: asked.append(p) or "ответ", assistant="t", model="m", done=done)
+        assert run["responses"]["price-known"] == "ответ прошлого запуска"
+        assert "Сколько стоят наушники Sony WH-1000XM5?" not in asked
+
+    def test_progress_is_reported_after_every_case(self):
+        snapshots = []
+        collect(CASES, lambda p: "ответ", assistant="t", model="m", on_progress=snapshots.append)
+        assert len(snapshots) == len(CASES["cases"])
+        assert [len(s["responses"]) for s in snapshots] == list(range(1, len(CASES["cases"]) + 1))
+
     def test_system_prompt_contains_catalog_and_rules(self):
         prompt = build_system_prompt(CATALOG)
         assert "Наушники Sony WH-1000XM5" in prompt
@@ -109,3 +122,38 @@ class TestCli:
     def test_rollback_blocks_release(self, monkeypatch):
         monkeypatch.chdir(ROOT)
         assert main(["compare", "runs/assistant-v2.json", "runs/assistant-v1.json"]) == 1
+
+
+class TestCollectResume:
+    """Сбой посреди сбора не теряет ответы, а повторный запуск продолжает с места остановки."""
+
+    def test_failure_keeps_answers_and_rerun_resumes(self, tmp_path, capsys):
+        from aieval.__main__ import run_collect
+
+        out = tmp_path / "live.json"
+        total = len(CASES["cases"])
+        calls = {"n": 0}
+
+        def flaky(prompt):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise ConnectionError("сеть пропала")
+            return "ответ"
+
+        assert run_collect(CASES, flaky, out, assistant="live", model="m") == 1
+        assert "продолжит" in capsys.readouterr().err
+        saved = json.loads(out.read_text(encoding="utf-8"))
+        assert 0 < len(saved["responses"]) < total
+
+        asked = []
+        assert run_collect(CASES, lambda p: asked.append(p) or "ответ", out, assistant="live", model="m") == 0
+        final = json.loads(out.read_text(encoding="utf-8"))
+        assert len(final["responses"]) == total
+        assert len(asked) < sum(c.get("repeats", 1) for c in CASES["cases"]), "собранное не запрашивалось снова"
+
+    def test_other_model_in_out_file_is_not_mixed_in(self, tmp_path):
+        from aieval.__main__ import run_collect
+
+        out = tmp_path / "live.json"
+        out.write_text(json.dumps({"assistant": "live", "model": "other", "responses": {"x": "y"}}), encoding="utf-8")
+        assert run_collect(CASES, lambda p: "ответ", out, assistant="live", model="m") == 2

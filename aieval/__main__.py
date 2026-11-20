@@ -20,6 +20,39 @@ from .runner import compare, evaluate, load_json
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def run_collect(cases: dict, ask, out: Path, *, assistant: str, model: str) -> int:
+    """Сбор с сохранением после каждого кейса. Прервался — запустите ту же команду ещё раз."""
+    from .collect import collect
+
+    done = {}
+    if out.exists():
+        previous = load_json(out)
+        if previous.get("model") != model or previous.get("assistant") != assistant:
+            print(f"{out} собран для {previous.get('assistant')}/{previous.get('model')} — "
+                  "укажите другой --out или удалите файл", file=sys.stderr)
+            return 2
+        done = previous.get("responses", {})
+        if done:
+            print(f"Продолжаю: уже собрано кейсов — {len(done)}")
+
+    def save(run: dict) -> None:
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        tmp.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(out)  # файл никогда не остаётся записанным наполовину
+
+    try:
+        save(collect(cases, ask, assistant=assistant, model=model, done=done, on_progress=save))
+    except KeyboardInterrupt:
+        print(f"\nОстановлено. Собранное сохранено в {out}; та же команда продолжит сбор.", file=sys.stderr)
+        return 130
+    except Exception as exc:  # noqa: BLE001 — ошибка API после всех повторов SDK: собранное уже на диске
+        print(f"Сбор прерван: {type(exc).__name__}: {exc}\n"
+              f"Собранное сохранено в {out}; та же команда продолжит с места остановки.", file=sys.stderr)
+        return 1
+    print(f"Сохранено: {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aieval", description="Оценка ответов AI-ассистента")
     parser.add_argument("--cases", default=ROOT / "evals" / "cases.json")
@@ -38,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     p_col = sub.add_parser("collect", help="собрать ответы модели через Anthropic API")
     p_col.add_argument("--model", required=True)
     p_col.add_argument("--assistant", default="live")
-    p_col.add_argument("--out", required=True)
+    p_col.add_argument("--out", required=True,
+                       help="файл прогона; если он уже есть (прошлый запуск прервался) — сбор продолжится с места остановки")
 
     args = parser.parse_args(argv)
     cases, catalog = load_json(args.cases), load_json(args.catalog)
@@ -46,10 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "collect":
         from .collect import build_system_prompt, collect, make_anthropic_ask
         ask = make_anthropic_ask(args.model, build_system_prompt(catalog))
-        run = collect(cases, ask, assistant=args.assistant, model=args.model)
-        Path(args.out).write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"Сохранено: {args.out}")
-        return 0
+        return run_collect(cases, ask, Path(args.out), assistant=args.assistant, model=args.model)
 
     if args.command == "evaluate":
         result = evaluate(cases, load_json(args.run), catalog)
